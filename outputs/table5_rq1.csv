@@ -1,0 +1,7 @@
+features,model,auc,auc_lo,auc_hi,accuracy,sensitivity,specificity,f1
+"Demographics (age, sex, BMI)",LogReg,0.8302,0.6927,0.9473,0.8507,0.8537,0.8462,0.875
+"Demographics (age, sex, BMI)",RF,0.9456,0.8841,0.9887,0.8657,0.9024,0.8077,0.8916
+ECG only,LogReg,0.9568,0.8883,1.0,0.8657,0.8537,0.8846,0.8861
+ECG only,RF,0.9231,0.8152,1.0,0.9254,0.9756,0.8462,0.9412
+ECG + demographics,LogReg,0.9512,0.8739,0.997,0.8955,0.9024,0.8846,0.9136
+ECG + demographics,RF,0.954,0.8883,0.9981,0.9403,0.9756,0.8846,0.9524

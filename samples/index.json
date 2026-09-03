@@ -1,0 +1,26 @@
+{
+  "x31 \u2014 Severe (AHI 94)": {
+    "record": "x31",
+    "age": 29.0,
+    "sex": "F",
+    "height_cm": 183.0,
+    "weight_kg": 100.0,
+    "AHI": 93.5
+  },
+  "a10 \u2014 Moderate (AHI 21)": {
+    "record": "a10",
+    "age": 58.0,
+    "sex": "M",
+    "height_cm": 176.0,
+    "weight_kg": 78.0,
+    "AHI": 21.0
+  },
+  "c07 \u2014 Normal (AHI 0)": {
+    "record": "c07",
+    "age": 30.0,
+    "sex": "F",
+    "height_cm": 168.0,
+    "weight_kg": 56.0,
+    "AHI": 0.0
+  }
+}

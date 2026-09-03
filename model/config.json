@@ -1,0 +1,35 @@
+{
+  "fs": 100,
+  "segment_sec": 60,
+  "derived_fs": 4.0,
+  "derived_len": 240,
+  "context": 5,
+  "ecg_band": [
+    0.5,
+    45.0
+  ],
+  "butter_order": 3,
+  "channels": [
+    0
+  ],
+  "stage1_model": "CNN-BiLSTM (RRI only)",
+  "stage1_basis": "held-out test set",
+  "stage1_f1": 0.8210601209533974,
+  "stage1_auc": 0.9385897595695992,
+  "stage2_features": [
+    "pred_index"
+  ],
+  "stage2_model": "LogReg",
+  "stage2_auc": 0.9568480300187617,
+  "stage2_auc_ci": [
+    0.8882953944760144,
+    1.0
+  ],
+  "ahi_threshold": 15.0,
+  "screening_threshold": 0.3032212437722613,
+  "screening_sensitivity": 0.975609756097561,
+  "screening_specificity": 0.8846153846153846,
+  "n_patients": 67,
+  "n_minutes": 33381,
+  "n_records": 68
+}
