@@ -379,3 +379,92 @@ def load_ecg_from_files(files):
 
     raise ValueError(
         "Upload a WFDB pair (both the .hea and .dat files) or a CSV of samples.")
+
+
+def screen_intervals(rr_ms, ts, model, stage2, cfg):
+    """Screen an RR-interval series using the existing derived-signal model.
+
+    ``ts`` contains seconds on a monotonic or epoch time axis, one timestamp
+    per interval. ECG filtering and R-peak detection are intentionally skipped;
+    interval artefact rejection and every operation from the 4 Hz PCHIP step
+    onward use the same configured values and model as :func:`screen`.
+
+    Watch/PPG interval performance has not been validated. Callers must expose
+    that provenance and must not present the ECG validation metrics as applying
+    to this result.
+    """
+    rr = np.asarray(rr_ms, dtype=np.float64) / 1000.0
+    times = np.asarray(ts, dtype=np.float64)
+    if rr.ndim != 1 or times.ndim != 1 or len(rr) != len(times):
+        raise ValueError("rr_ms and ts must be one-dimensional arrays of equal length.")
+    if len(rr) < 4:
+        raise ValueError("At least four intervals are required to assess signal quality.")
+    if not np.isfinite(rr).all() or not np.isfinite(times).all():
+        raise ValueError("Intervals and timestamps must contain only finite values.")
+    if np.any(np.diff(times) <= 0):
+        raise ValueError("Timestamps must be strictly increasing.")
+
+    # Retain physiologic bounds and rolling-median artefact rejection from
+    # rr_and_edr(), which is the interval-resampling stage used for ECG input.
+    valid = (rr >= 0.3) & (rr <= 2.0)
+    rr_t = times[valid]
+    rr_valid = rr[valid]
+    if len(rr_valid) >= 1:
+        med = pd.Series(rr_valid).rolling(5, center=True,
+                                         min_periods=1).median().to_numpy()
+        keep = np.abs(rr_valid - med) <= 0.20 * med
+        rr_valid, rr_t = rr_valid[keep], rr_t[keep]
+    usable_ratio = float(len(rr_valid) / len(rr))
+    duration = float(times[-1] - times[0])
+    gaps = np.diff(times)
+    gap_count = int(np.sum(gaps > 2.0))
+    gap_seconds = float(np.sum(np.maximum(gaps - 2.0, 0.0)))
+    if duration < 600:
+        raise ValueError(
+            f"Recording is only {duration / 60:.1f} minutes. At least 10 minutes is "
+            "needed, and a full night is what the model was trained on.")
+    if len(rr_valid) < 50:
+        raise ValueError(
+            f"Only {len(rr_valid)} usable intervals were recovered. The signal is "
+            "too noisy to score reliably.")
+
+    # RR-only is the trained artifact configuration. Keep a zero-valued second
+    # channel available for configurations that select channels from both
+    # derived signals, but never claim that EDR was measured by a watch.
+    grid = np.arange(0, duration, 1.0 / cfg["derived_fs"])
+    rr_n = robust_z(pchip_to_grid(rr_t - times[0], rr_valid, grid))
+    edr_n = np.zeros_like(rr_n)
+    L = cfg["derived_len"]
+    n_min = min(int(duration // cfg["segment_sec"]), len(rr_n) // L)
+    if n_min < 1:
+        raise ValueError("Not enough data to form a single one-minute segment.")
+    segs = np.stack([np.stack([rr_n[i * L:(i + 1) * L],
+                               edr_n[i * L:(i + 1) * L]], axis=1)
+                     for i in range(n_min)]).astype(np.float32)
+    segs = segs[:, :, cfg["channels"]]
+
+    ctx = cfg["context"]
+    preds, probs = [], []
+    with torch.no_grad():
+        for i in range(0, n_min, 128):
+            win = []
+            for j in range(i, min(i + 128, n_min)):
+                w = np.clip(np.arange(j - ctx, j + ctx + 1), 0, n_min - 1)
+                win.append(np.transpose(segs[w], (0, 2, 1)))
+            lg = model(torch.from_numpy(np.stack(win)).to(DEVICE))
+            probs.append(torch.softmax(lg, 1)[:, 1].cpu().numpy())
+            preds.append(lg.argmax(1).cpu().numpy())
+    preds, probs = np.concatenate(preds), np.concatenate(probs)
+    apnea_min = int(preds.sum())
+    apnea_index = 60.0 * apnea_min / max(n_min, 1)
+    feat = {"pred_index": apnea_index, "age": np.nan, "BMI": np.nan,
+            "is_male": np.nan}
+    X = np.array([[feat.get(c, np.nan) for c in cfg["stage2_features"]]])
+    risk = float(stage2.predict_proba(X)[0, 1])
+    return dict(minutes=n_min, apnea_minutes=apnea_min, apnea_index=apnea_index,
+                per_minute_pred=preds, per_minute_prob=probs, risk=risk,
+                refer=bool(risk >= cfg["screening_threshold"]), hours=duration / 3600,
+                heart_rate=60.0 / np.mean(rr_valid), n_beats=len(rr_valid),
+                signal_quality={"usable_beat_ratio": usable_ratio,
+                                "gap_count": gap_count,
+                                "gap_seconds": gap_seconds})
