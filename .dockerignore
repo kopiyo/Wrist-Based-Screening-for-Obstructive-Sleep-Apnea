@@ -1,0 +1,12 @@
+.git
+.venv
+**/node_modules
+**/dist
+**/__pycache__
+.pytest_cache
+apps/web/test-results
+apps/web/playwright-report
+cache
+outputs
+samples
+*.ipynb

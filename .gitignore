@@ -1,3 +1,9 @@
 .venv/
 __pycache__/
 *.pyc
+node_modules/
+apps/web/dist/
+.pytest_cache/
+playwright-report/
+test-results/
+*.tsbuildinfo
