@@ -1,0 +1,557 @@
+openapi: 3.1.0
+info:
+  title: Nightwise Screening API
+  version: 2.0.0
+  description: >-
+    Screening tool, not a diagnosis. Research use only. Anonymous analyses are
+    allowed and never saved. Persistent storage requires explicit per-analysis
+    consent. RR/PPG sources are unvalidated. Alert notifications contain no
+    scores or health values.
+servers:
+  - url: https://api.example.invalid
+security: []
+x-security-controls:
+  cors: >-
+    Exact CORS_ORIGINS allowlist only; wildcard origins are prohibited with
+    credentials. Allow credentials and GET, POST, PUT, PATCH, DELETE, OPTIONS only.
+    Allow Content-Type, X-CSRF-Token, X-Reauth-Token, X-Job-Capability. Validate Origin for each
+    state-changing cookie-authenticated request.
+  cookies: >-
+    Production requires HTTPS and host-only cookies. nw_access is Secure,
+    HttpOnly, SameSite=Lax, 10 minutes. nw_refresh is Secure, HttpOnly,
+    SameSite=Lax, rotating, maximum 30 days. nw_csrf is Secure, SameSite=Lax;
+    send its value in X-CSRF-Token. X-Reauth-Token is one-use, purpose-bound,
+    expires after five minutes.
+  rate_limits:
+    login: 10/IP/15m and 5/normalized-account/15m; stricter limit applies
+    register: 5/IP/hour
+    verification_email: 3/account/hour and 10/IP/hour
+    export: 3/account/hour
+    alert_delivery: 20 actual delivery attempts/account/rolling hour, retries included; quiet-hour deferrals do not count until attempted
+paths:
+  /v1/health:
+    get:
+      summary: Health/readiness
+      responses: {'200': {description: Service and model readiness with disclaimer}}
+  /v1/model-card:
+    get:
+      summary: Get research model facts
+      description: Model-card values describe the ECG research model only and must not be applied to RR/PPG sources.
+      responses: {'200': {description: Model metadata and disclaimer}}
+  /v1/auth/csrf:
+    get:
+      summary: Get CSRF token
+      responses:
+        '200':
+          description: Sets nw_csrf cookie and returns its token for mutation headers.
+          content:
+            application/json:
+              schema: {type: object, required: [csrf_token], properties: {csrf_token: {type: string}}}
+  /v1/auth/register/options:
+    post:
+      summary: Begin passkey account registration
+      description: Existing normalized email returns 409. Account is not usable until email verification and passkey registration complete.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, required: [email], properties: {email: {type: string, format: email}, timezone: {type: string, description: IANA timezone, default: UTC}}}
+      responses:
+        '200': {description: WebAuthn creation options and one-time challenge, content: {application/json: {schema: {$ref: '#/components/schemas/Challenge'}}}}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+  /v1/auth/register/verify:
+    post:
+      summary: Verify registration passkey and create pending account
+      description: Sends a single-use email verification link expiring after 24 hours. Email alerts remain disabled until verified.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CredentialProof'}
+      responses:
+        '201': {description: Pending account; sets auth cookies, content: {application/json: {schema: {$ref: '#/components/schemas/User'}}}}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+  /v1/auth/email/verify:
+    post:
+      summary: Consume single-use email verification link after user confirmation
+      description: The emailed link opens a first-party page with the token in the URL fragment, which is not sent to web or API access logs. The user confirms on that page, which POSTs the token. Invalid, expired and consumed token responses are indistinguishable. Store only the token hash.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, required: [token], properties: {token: {type: string}}}
+      responses:
+        '200': {description: Email verified, content: {application/json: {schema: {type: object, properties: {email_verified: {type: boolean, const: true}}}}}}
+        '400': {description: Verification link invalid, expired or consumed}
+  /v1/auth/email/verification/resend:
+    post:
+      summary: Resend verification email
+      security: [{accessCookie: []}]
+      parameters: [{$ref: '#/components/parameters/CsrfHeader'}]
+      responses:
+        '202': {description: Generic accepted response without revealing verification state, content: {application/json: {schema: {type: object, required: [status], properties: {status: {type: string, const: accepted}}}}}}
+        '429': {$ref: '#/components/responses/RateLimited'}
+  /v1/auth/login/options:
+    post:
+      summary: Begin passkey login
+      description: Unknown and known emails return identical status, schema, message and timing class. Use discoverable credentials and identical allowCredentials options so the response does not reveal account/passkey existence. Unknown-account challenges cannot authenticate. Apply IP and normalized-account rate limits.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, required: [email], properties: {email: {type: string, format: email}}}
+      responses:
+        '200': {description: Identically shaped passkey options for known and unknown email, content: {application/json: {schema: {$ref: '#/components/schemas/LoginOptions'}}}}
+        '429': {$ref: '#/components/responses/RateLimited'}
+  /v1/auth/login/verify:
+    post:
+      summary: Complete passkey login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CredentialProof'}
+      responses:
+        '200': {description: Sets access and rotating refresh cookies, content: {application/json: {schema: {$ref: '#/components/schemas/User'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '429': {$ref: '#/components/responses/RateLimited'}
+  /v1/auth/refresh:
+    post:
+      security: [{refreshCookie: []}]
+      parameters: [{$ref: '#/components/parameters/CsrfHeader'}]
+      responses: {'200': {description: Rotates refresh token and sets auth cookies}, '401': {$ref: '#/components/responses/Unauthorized'}}
+  /v1/auth/logout:
+    post:
+      security: [{accessCookie: []}]
+      parameters: [{$ref: '#/components/parameters/CsrfHeader'}]
+      responses: {'204': {description: Revokes refresh-token family and clears cookies}}
+  /v1/auth/me:
+    get:
+      security: [{accessCookie: []}]
+      responses:
+        '200': {description: Signed-in account, content: {application/json: {schema: {$ref: '#/components/schemas/User'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+  /v1/settings:
+    patch:
+      summary: Update account settings
+      description: timezone is an IANA timezone and controls morning summaries and quiet hours.
+      security: [{accessCookie: []}]
+      parameters: [{$ref: '#/components/parameters/CsrfHeader'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, required: [timezone], properties: {timezone: {type: string, description: IANA timezone identifier, example: Africa/Nairobi}}}
+      responses:
+        '200': {description: Updated account, content: {application/json: {schema: {$ref: '#/components/schemas/User'}}}}
+        '422': {$ref: '#/components/responses/ValidationError'}
+  /v1/auth/passkeys:
+    post:
+      summary: Add passkey to signed-in account
+      description: Requires authenticated account; multiple passkeys are supported. When called in a restricted recovery session, adding the passkey upgrades the session and issues normal access and refresh cookies.
+      security: [{accessCookie: []}]
+      parameters: [{$ref: '#/components/parameters/CsrfHeader'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CredentialProof'}
+      responses: {'201': {description: Passkey added}, '401': {$ref: '#/components/responses/Unauthorized'}}
+  /v1/auth/passkeys/options:
+    post:
+      summary: Get passkey registration options for signed-in account
+      security: [{accessCookie: []}]
+      parameters: [{$ref: '#/components/parameters/CsrfHeader'}]
+      responses: {'200': {description: WebAuthn registration challenge, content: {application/json: {schema: {$ref: '#/components/schemas/Challenge'}}}}}
+  /v1/auth/recovery-codes:
+    post:
+      summary: Replace one-time recovery codes
+      description: Requires fresh passkey re-authentication. Show plaintext once; store salted hashes only. Replacing codes invalidates old unused codes.
+      security: [{accessCookie: []}]
+      parameters: [{$ref: '#/components/parameters/CsrfHeader'}, {$ref: '#/components/parameters/ReauthHeader'}]
+      responses:
+        '200':
+          description: One-time plaintext code display
+          content:
+            application/json:
+              schema: {type: object, required: [codes], properties: {codes: {type: array, minItems: 8, maxItems: 12, items: {type: string}}}}
+  /v1/auth/recovery:
+    post:
+      summary: Recover access using one recovery code
+      description: Code is consumed atomically and cannot be reused; issue a restricted session until a passkey is verified or added.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, required: [email, code], properties: {email: {type: string, format: email}, code: {type: string}}}
+      responses: {'200': {description: Sets a restricted 10-minute recovery access cookie; only passkey creation is allowed until the new passkey upgrades the session and issues a normal refresh family, content: {application/json: {schema: {type: object, required: [status], properties: {status: {type: string, const: restricted_recovery_session}}}}}}, '401': {$ref: '#/components/responses/Unauthorized'}, '429': {$ref: '#/components/responses/RateLimited'}}
+  /v1/auth/reauth/options:
+    post:
+      summary: Begin fresh passkey proof for sensitive operation
+      security: [{accessCookie: []}]
+      parameters: [{$ref: '#/components/parameters/CsrfHeader'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, required: [purpose], properties: {purpose: {type: string, enum: [export, delete, recovery_codes]}}}
+      responses: {'200': {description: Purpose-bound WebAuthn challenge, content: {application/json: {schema: {$ref: '#/components/schemas/Challenge'}}}}}
+  /v1/auth/reauth/verify:
+    post:
+      summary: Complete fresh passkey proof
+      security: [{accessCookie: []}]
+      parameters: [{$ref: '#/components/parameters/CsrfHeader'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CredentialProof'}
+      responses: {'200': {description: Returns one-use purpose-bound token valid for five minutes; never logged}}
+  /v1/privacy/consent:
+    get:
+      summary: Get current consent disclosure
+      responses:
+        '200': {description: Versioned consent text and disclaimer, content: {application/json: {schema: {$ref: '#/components/schemas/ConsentText'}}}}
+  /v1/privacy/consents:
+    get:
+      summary: List account consent records
+      description: Returns the signed-in user's consent versions and active/revoked state so consent can be reviewed or revoked after sign-in on a new device.
+      security: [{accessCookie: []}]
+      responses:
+        '200': {description: User-owned consent records, content: {application/json: {schema: {type: object, required: [items], properties: {items: {type: array, items: {$ref: '#/components/schemas/ConsentRecord'}}}}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+    post:
+      summary: Grant consent for future saved analyses
+      security: [{accessCookie: []}]
+      parameters: [{$ref: '#/components/parameters/CsrfHeader'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, required: [text_version, scope, affirmative], properties: {text_version: {type: string}, scope: {type: string, const: save_analysis_results}, affirmative: {type: boolean, const: true}}}
+      responses:
+        '201': {description: Timestamped consent, content: {application/json: {schema: {$ref: '#/components/schemas/Consent'}}}}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /v1/privacy/consents/{consent_id}:
+    delete:
+      summary: Revoke consent
+      description: UI asks whether to delete saved nights. true deletes nights/results and dependent alert details; false retains existing nights with historical consent reference and blocks future saves.
+      security: [{accessCookie: []}]
+      parameters: [{in: path, name: consent_id, required: true, schema: {type: string, format: uuid}}, {$ref: '#/components/parameters/CsrfHeader'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, required: [delete_saved_nights], properties: {delete_saved_nights: {type: boolean}}}
+      responses: {'204': {description: Consent revoked and requested deletion performed}, '404': {description: Consent not found or not owned}}
+  /v1/analyze/intervals:
+    post:
+      summary: Analyze RR/PPG interval series
+      description: Anonymous analysis is allowed and ephemeral. Save only with verified signed-in account, active consent_id and persist_result=true. Input is staged in encrypted short-TTL blob volume, never Redis.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - {$ref: '#/components/schemas/IntervalsRequest'}
+                - type: object
+                  properties:
+                    persist_result: {type: boolean, default: false}
+                    consent_id: {type: [string, 'null'], format: uuid}
+                    device_id: {type: [string, 'null'], format: uuid, description: "An active device of the signed-in user; recorded only when persist_result is true."}
+      responses:
+        '202': {description: Accepted, content: {application/json: {schema: {$ref: '#/components/schemas/JobAccepted'}}}}
+        '403': {description: Persistence requires verified account and current consent}
+        '413': {description: Input exceeds 100 MB}
+        '422': {$ref: '#/components/responses/ValidationError'}
+  /v1/analyze/file:
+    post:
+      summary: Analyze ECG or RR CSV upload
+      description: Combined limit 100 MB. Upload bytes never enter Redis or the database; encrypted temp blobs live on private dedicated volume and are deleted at completion or one-hour expiry.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [files]
+              properties:
+                files: {type: array, maxItems: 10, items: {type: string, format: binary}}
+                kind: {type: string, enum: [ecg, rr_csv], default: ecg}
+                persist_result: {type: boolean, default: false}
+                consent_id: {type: [string, 'null'], format: uuid}
+                device_id: {type: [string, 'null'], format: uuid, description: "An active device of the signed-in user; recorded only when persist_result is true."}
+      responses:
+        '202': {description: Accepted, content: {application/json: {schema: {$ref: '#/components/schemas/JobAccepted'}}}}
+        '403': {description: Persistence requires verified account and current consent}
+        '413': {description: Combined upload exceeds 100 MB}
+        '422': {$ref: '#/components/responses/ValidationError'}
+  /v1/jobs/{job_id}:
+    get:
+      summary: Get analysis job
+      description: Authenticated owner or anonymous X-Job-Capability required. RQ uses JSON serializer only; Redis metadata contains opaque blob IDs, never uploads. Ephemeral job/result metadata expires after 24 hours.
+      parameters: [{in: path, name: job_id, required: true, schema: {type: string, format: uuid}}, {in: header, name: X-Job-Capability, required: false, schema: {type: string}}]
+      responses:
+        '200': {description: Job state/result, content: {application/json: {schema: {$ref: '#/components/schemas/Job'}}}}
+        '403': {description: Wrong job capability or owner}
+        '404': {description: Missing or expired job}
+  /v1/jobs/{job_id}/events:
+    get:
+      summary: Stream job events
+      parameters: [{in: path, name: job_id, required: true, schema: {type: string, format: uuid}}, {in: header, name: X-Job-Capability, required: false, schema: {type: string}}]
+      responses:
+        '200': {description: SSE stream, content: {text/event-stream: {schema: {type: string}}}}
+        '403': {description: Wrong job capability or owner}
+  /v1/results/{result_id}:
+    get:
+      summary: Get completed analysis result
+      description: Authenticated owner or anonymous X-Job-Capability required. Includes source_validated, model_version and disclaimer; never claims RR/PPG validation. Chart series are LTTB-downsampled by default; full resolution is limited to 50,000 points per series.
+      parameters: [{in: path, name: result_id, required: true, schema: {type: string, format: uuid}}, {in: header, name: X-Job-Capability, required: false, schema: {type: string}}, {$ref: '#/components/parameters/Resolution'}, {$ref: '#/components/parameters/MaxPoints'}]
+      responses:
+        '200': {description: Result, content: {application/json: {schema: {$ref: '#/components/schemas/AnalysisResult'}}}}
+        '403': {description: Wrong job capability or owner}
+        '404': {description: Result missing or expired}
+  /v1/nights:
+    get:
+      summary: List saved nights
+      security: [{accessCookie: []}]
+      parameters: [{in: query, name: from, schema: {type: string, format: date-time}}, {in: query, name: to, schema: {type: string, format: date-time}}, {in: query, name: source, schema: {type: string, enum: [ecg, watch_rr, ppg_rr]}}, {in: query, name: cursor, schema: {type: string}}]
+      responses:
+        '200': {description: Owner's saved nights; every item has source_validated and model_version, content: {application/json: {schema: {$ref: '#/components/schemas/NightList'}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+  /v1/nights/compare:
+    get:
+      summary: Compare saved nights
+      description: Register this static route before /v1/nights/{night_id}.
+      security: [{accessCookie: []}]
+      parameters: [{in: query, name: night_ids, required: true, description: 2 to 10 comma-separated UUIDs, schema: {type: string}}, {$ref: '#/components/parameters/Resolution'}, {$ref: '#/components/parameters/MaxPoints'}]
+      responses:
+        '200': {description: Comparison with source_validated and model_version per night, content: {application/json: {schema: {$ref: '#/components/schemas/NightComparison'}}}}
+        '404': {description: Night missing or not owned}
+        '422': {$ref: '#/components/responses/ValidationError'}
+  /v1/nights/{night_id}:
+    get:
+      summary: Get saved night detail
+      security: [{accessCookie: []}]
+      parameters: [{in: path, name: night_id, required: true, schema: {type: string, format: uuid}}, {$ref: '#/components/parameters/Resolution'}, {$ref: '#/components/parameters/MaxPoints'}]
+      responses:
+        '200': {description: Owner-only result with downsampled charts, source_validated, model_version and disclaimer, content: {application/json: {schema: {$ref: '#/components/schemas/NightDetail'}}}}
+        '404': {description: Night missing or not owned}
+        '422': {description: Full series exceeds 50,000 points}
+    delete:
+      summary: Delete one saved night
+      security: [{accessCookie: []}]
+      parameters: [{in: path, name: night_id, required: true, schema: {type: string, format: uuid}}, {$ref: '#/components/parameters/CsrfHeader'}]
+      responses: {'204': {description: Deletes night/result and dependent alert details}, '404': {description: Night missing or not owned}}
+  /v1/devices:
+    get:
+      security: [{accessCookie: []}]
+      responses: {'200': {description: Current user's devices}}
+    post:
+      security: [{accessCookie: []}]
+      parameters: [{$ref: '#/components/parameters/CsrfHeader'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, required: [source], properties: {source: {type: string, enum: [ecg, watch_rr, ppg_rr]}, label: {type: [string, 'null'], maxLength: 80}}}
+      responses: {'201': {description: Device created}}
+  /v1/devices/{device_id}:
+    delete:
+      security: [{accessCookie: []}]
+      parameters: [{in: path, name: device_id, required: true, schema: {type: string, format: uuid}}, {$ref: '#/components/parameters/CsrfHeader'}]
+      responses: {'204': {description: Device and push registration removed}, '404': {description: Device missing or not owned}}
+  /v1/me/data/export:
+    post:
+      summary: Export account and saved data as JSON
+      description: Fresh passkey reauth purpose export required. Rate limit is 3 exports/account/hour.
+      security: [{accessCookie: []}]
+      parameters: [{$ref: '#/components/parameters/CsrfHeader'}, {$ref: '#/components/parameters/ReauthHeader'}]
+      responses:
+        '200': {description: JSON export; reauth token consumed, content: {application/json: {schema: {$ref: '#/components/schemas/DataExport'}}}}
+        '403': {description: Missing, expired, used or wrong-purpose reauth token}
+        '429': {$ref: '#/components/responses/RateLimited'}
+  /v1/me/data:
+    delete:
+      summary: Hard-delete account and saved data
+      description: Fresh passkey reauth purpose delete and typed confirmation required. Removes live rows and wrapped user key, revokes sessions, cancels jobs and deletes temporary blobs. Non-identifying tombstone is retained through backup expiry.
+      security: [{accessCookie: []}]
+      parameters: [{$ref: '#/components/parameters/CsrfHeader'}, {$ref: '#/components/parameters/ReauthHeader'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, required: [confirmation], properties: {confirmation: {type: string, const: DELETE MY DATA}}}
+      responses: {'204': {description: Account deleted; tombstone retained until backup expiry}, '403': {description: Missing, expired, used or wrong-purpose reauth token}}
+  /v1/alerts/rules:
+    get:
+      security: [{accessCookie: []}]
+      responses: {'200': {description: Rules include availability and disabled reason}}
+    put:
+      security: [{accessCookie: []}]
+      parameters: [{$ref: '#/components/parameters/CsrfHeader'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AlertRuleUpdate'}
+      responses: {'200': {description: Updated rules and local quiet hours}, '409': {description: 'device_silent_overnight disabled: needs live device until Phase 3'}}
+  /v1/alerts:
+    get:
+      security: [{accessCookie: []}]
+      parameters: [{in: query, name: cursor, schema: {type: string}}]
+      responses:
+        '200': {description: Owner's alert details and delivery state; details are account-only and external notification body itself has no health values, content: {application/json: {schema: {$ref: '#/components/schemas/AlertList'}}}}
+  /v1/alerts/{alert_id}/deliveries:
+    get:
+      security: [{accessCookie: []}]
+      parameters: [{in: path, name: alert_id, required: true, schema: {type: string, format: uuid}}]
+      responses: {'200': {description: Delivery attempts without destinations or payloads}, '404': {description: Alert missing or not owned}}
+  /v1/alerts/web-push/subscriptions:
+    post:
+      security: [{accessCookie: []}]
+      parameters: [{$ref: '#/components/parameters/CsrfHeader'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, required: [endpoint, keys], properties: {endpoint: {type: string, format: uri}, keys: {type: object, required: [p256dh, auth], properties: {p256dh: {type: string}, auth: {type: string}}}}}
+      responses: {'201': {description: Encrypted subscription stored}}
+  /v1/alerts/web-push/subscriptions/{subscription_id}:
+    delete:
+      security: [{accessCookie: []}]
+      parameters: [{in: path, name: subscription_id, required: true, schema: {type: string, format: uuid}}, {$ref: '#/components/parameters/CsrfHeader'}]
+      responses: {'204': {description: Subscription removed}, '404': {description: Subscription missing or not owned}}
+components:
+  securitySchemes:
+    accessCookie: {type: apiKey, in: cookie, name: nw_access}
+    refreshCookie: {type: apiKey, in: cookie, name: nw_refresh}
+  parameters:
+    CsrfHeader: {in: header, name: X-CSRF-Token, required: true, schema: {type: string}}
+    ReauthHeader: {in: header, name: X-Reauth-Token, required: true, schema: {type: string}}
+    Resolution: {in: query, name: resolution, schema: {type: string, enum: [downsampled, full], default: downsampled}, description: Downsampled uses LTTB. Default maximum 1,000 points per series. Full resolution maximum 50,000 points per series.}
+    MaxPoints: {in: query, name: max_points, schema: {type: integer, minimum: 100, maximum: 2000, default: 1000}, description: Maximum points per series in downsampled mode; ignored in full mode.}
+  responses:
+    Unauthorized: {description: Authentication required or invalid session}
+    Conflict: {description: Existing account, conflicting request or stale consent version}
+    ValidationError: {description: Invalid request, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    RateLimited: {description: Limit exceeded; Retry-After header included}
+  schemas:
+    Error: {type: object, properties: {detail: {type: string}, request_id: {type: string}}}
+    User:
+      type: object
+      required: [id, email, email_verified_at, timezone]
+      properties:
+        id: {type: string, format: uuid}
+        email: {type: string, format: email}
+        email_verified_at: {type: [string, 'null'], format: date-time}
+        timezone: {type: string, description: IANA timezone}
+    Challenge: {type: object, required: [challenge_id, public_key_options], properties: {challenge_id: {type: string, format: uuid}, public_key_options: {type: object, additionalProperties: true}}}
+    CredentialProof: {type: object, required: [challenge_id, credential], properties: {challenge_id: {type: string, format: uuid}, credential: {type: object, additionalProperties: true}, label: {type: string, maxLength: 80}}}
+    LoginOptions: {type: object, required: [challenge_id, public_key_options, message], properties: {challenge_id: {type: string, format: uuid}, public_key_options: {type: object, additionalProperties: true}, message: {type: string, const: If the account can be used, passkey options are ready.}}}
+    ConsentText: {type: object, required: [text_version, text, disclaimer], properties: {text_version: {type: string}, text: {type: string}, disclaimer: {type: string, const: Screening tool, not a diagnosis. Research use only.}}}
+    Consent: {type: object, required: [id, text_version, granted_at, scope], properties: {id: {type: string, format: uuid}, text_version: {type: string}, granted_at: {type: string, format: date-time}, scope: {type: string, const: save_analysis_results}}}
+    ConsentRecord: {type: object, required: [id, text_version, granted_at, scope, revoked_at], properties: {id: {type: string, format: uuid}, text_version: {type: string}, granted_at: {type: string, format: date-time}, revoked_at: {type: [string, 'null'], format: date-time}, scope: {type: string, const: save_analysis_results}}}
+    IntervalsRequest:
+      type: object
+      required: [rr_ms, ts]
+      properties:
+        source: {type: string, enum: [watch_rr, ppg_rr], default: watch_rr}
+        device: {type: [string, 'null'], maxLength: 80}
+        start_ts: {type: [number, 'null']}
+        rr_ms: {type: array, minItems: 4, maxItems: 200000, items: {type: number}}
+        ts: {type: array, minItems: 4, maxItems: 200000, items: {type: number}}
+    JobAccepted: {type: object, required: [job_id, status, disclaimer], properties: {job_id: {type: string, format: uuid}, status: {type: string, const: queued}, job_capability: {type: [string, 'null'], description: Anonymous capability; treat as secret}, disclaimer: {type: string, const: Screening tool, not a diagnosis. Research use only.}}}
+    Job: {type: object, required: [job_id, status], properties: {job_id: {type: string, format: uuid}, status: {type: string, enum: [queued, started, finished, failed, expired]}, result_id: {type: [string, 'null'], format: uuid}, result: {oneOf: [{$ref: '#/components/schemas/AnalysisResult'}, {type: 'null'}]}, error: {type: [string, 'null']}}}
+    AnalysisResult:
+      type: object
+      required: [source, source_validated, model_version, disclaimer]
+      properties:
+        source: {type: string, enum: [ecg, watch_rr, ppg_rr]}
+        source_validated: {type: boolean}
+        model_version: {type: string}
+        score: {type: number}
+        apnea_burden_percent: {type: number}
+        charts:
+          type: object
+          description: Every series is LTTB-downsampled by default; max_points controls the downsample cap. Full resolution can be requested up to 50,000 points per series.
+          properties:
+            probability_by_minute: {type: array, items: {$ref: '#/components/schemas/ChartPoint'}}
+            interval_tachogram: {type: [array, 'null'], items: {$ref: '#/components/schemas/ChartPoint'}}
+            rejected_artifacts: {type: [array, 'null'], items: {$ref: '#/components/schemas/ChartPoint'}}
+        chart_availability: {type: object, properties: {interval_tachogram: {type: boolean}, rejected_artifacts: {type: boolean}}}
+        duration_seconds: {type: number}
+        signal_quality: {type: object, additionalProperties: true}
+        disclaimer: {type: string, const: Screening tool, not a diagnosis. Research use only.}
+    NightSummary: {type: object, required: [id, started_at, source, source_validated, model_version], properties: {id: {type: string, format: uuid}, started_at: {type: string, format: date-time}, source: {type: string, enum: [ecg, watch_rr, ppg_rr]}, source_validated: {type: boolean}, model_version: {type: string}, score: {type: number}, apnea_burden_percent: {type: number}, device_id: {type: [string, 'null'], format: uuid}}}
+    NightList: {type: object, required: [items], properties: {items: {type: array, items: {$ref: '#/components/schemas/NightSummary'}}, next_cursor: {type: [string, 'null']}}}
+    ChartPoint: {type: object, required: [x, y], properties: {x: {type: number, description: Elapsed seconds from night start}, y: {type: number}, flagged: {type: [boolean, 'null']}}}
+    NightDetail:
+      allOf:
+        - {$ref: '#/components/schemas/NightSummary'}
+        - type: object
+          required: [duration_seconds, charts, disclaimer]
+          properties:
+            duration_seconds: {type: number}
+            charts:
+              type: object
+              properties:
+                probability_by_minute: {type: array, items: {$ref: '#/components/schemas/ChartPoint'}}
+                interval_tachogram: {type: array, items: {$ref: '#/components/schemas/ChartPoint'}}
+                rejected_artifacts: {type: array, items: {$ref: '#/components/schemas/ChartPoint'}}
+            signal_quality: {type: object, additionalProperties: true}
+            disclaimer: {type: string, const: Screening tool, not a diagnosis. Research use only.}
+    NightComparison: {type: object, required: [items, disclaimer], properties: {items: {type: array, minItems: 2, maxItems: 10, items: {$ref: '#/components/schemas/NightDetail'}}, disclaimer: {type: string, const: Screening tool, not a diagnosis. Research use only.}}}
+    DataExport: {type: object, required: [exported_at, user, consents, nights], properties: {exported_at: {type: string, format: date-time}, user: {$ref: '#/components/schemas/User'}, consents: {type: array, items: {$ref: '#/components/schemas/Consent'}}, nights: {type: array, items: {$ref: '#/components/schemas/NightDetail'}}}}
+    AlertRuleUpdate:
+      type: object
+      required: [rules, quiet_hours]
+      properties:
+        rules:
+          type: array
+          items:
+            type: object
+            required: [kind, enabled]
+            properties:
+              kind: {type: string, enum: [screening_result, worsening_trend, morning_summary, device_silent_overnight]}
+              enabled: {type: boolean}
+              channels: {type: array, items: {type: string, enum: [email, web_push]}}
+        quiet_hours:
+          type: object
+          required: [start, end]
+          properties:
+            start: {type: string, pattern: '^([01]\\d|2[0-3]):[0-5]\\d$'}
+            end: {type: string, pattern: '^([01]\\d|2[0-3]):[0-5]\\d$'}
+      x-rule-semantics:
+        saved_nights_only: Only nights saved with explicit consent are evaluated.
+        screening_result: One generic alert after a saved analysis completes; no score or health value in message.
+        worsening_trend: Require at least 6 saved nights within rolling 30 days. Compare arithmetic mean of newest 3 with immediately preceding 3; trigger if newest mean is >= previous mean + 0.10. This is a research notification, not a clinical worsening claim.
+        morning_summary: At 07:00 users.timezone local time, summarize nights whose local start date is previous local calendar date; at most one per local date.
+        quiet_hours: Interpret start/end in users.timezone; defer delivery until next local quiet-hours end.
+        device_silent_overnight: Implemented but disabled in Phase 2; availability is needs_live_device until Phase 3 and enabling returns 409.
+        notification_payload: Push/email is generic, contains no score/health value, always includes 'Screening tool, not a diagnosis. Research use only.' and includes exact phrase 'Unvalidated source' when source_validated=false. Details require login.
+    AlertList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            required: [id, kind, created_at, status, source_validated, details_available]
+            properties:
+              id: {type: string, format: uuid}
+              kind: {type: string, enum: [screening_result, worsening_trend, morning_summary]}
+              created_at: {type: string, format: date-time}
+              status: {type: string}
+              night_id: {type: [string, 'null'], format: uuid}
+              source_validated: {type: [boolean, 'null'], description: Conservative aggregate; false if any contributing saved night is unvalidated.}
+              sources: {type: array, items: {type: string, enum: [ecg, watch_rr, ppg_rr]}, description: Sources of all contributing saved nights.}
+              source_nights: {type: array, items: {type: object, required: [night_id, started_at, source, source_validated], properties: {night_id: {type: string, format: uuid}, started_at: {type: string, format: date-time}, source: {type: string, enum: [ecg, watch_rr, ppg_rr]}, source_validated: {type: boolean}}}}
+              details_available: {type: boolean}
+              detail: {type: [object, 'null'], description: Authenticated owner-only health detail; never included in push/email notification payloads., properties: {score: {type: number}, apnea_burden_percent: {type: number}, source: {type: string}, source_validated: {type: boolean}, sources: {type: array, items: {type: string}}, model_version: {type: string}}}
+        next_cursor: {type: [string, 'null']}

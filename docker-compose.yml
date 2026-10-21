@@ -1,0 +1,119 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-nightwise}
+      POSTGRES_USER: ${POSTGRES_USER:-nightwise}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nightwise-local-dev-only}
+    volumes: [postgres_data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-nightwise} -d ${POSTGRES_DB:-nightwise}"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+    networks: [private]
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "no", "--save", "", "--requirepass", "${REDIS_PASSWORD:-nightwise-local-dev-only}"]
+    networks: [private]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a '${REDIS_PASSWORD:-nightwise-local-dev-only}' ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+
+  mailpit:
+    image: axllent/mailpit:v1.27
+    ports: ["127.0.0.1:8025:8025"]
+    networks: [private]
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    command: ["sh", "-c", "alembic -c apps/api/alembic.ini upgrade head && uvicorn apps.api.main:app --host 0.0.0.0 --port 8000 --no-access-log"]
+    environment:
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:8080}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-nightwise}:${POSTGRES_PASSWORD:-nightwise-local-dev-only}@postgres:5432/${POSTGRES_DB:-nightwise}
+      REDIS_URL: redis://:${REDIS_PASSWORD:-nightwise-local-dev-only}@redis:6379/0
+      JWT_SECRET: ${JWT_SECRET:-}
+      MASTER_KEY: ${MASTER_KEY:-}
+      MASTER_KEY_VERSION: ${MASTER_KEY_VERSION:-v1}
+      TEMP_BLOB_KEY: ${TEMP_BLOB_KEY:-}
+      TEMP_BLOB_DIR: /var/lib/nightwise/temp
+      TOMBSTONE_DIR: /var/lib/nightwise/tombstones
+      SMTP_URL: ${SMTP_URL:-smtp://mailpit:1025}
+      SMTP_STARTTLS: ${SMTP_STARTTLS:-0}
+      WEB_PUBLIC_URL: ${WEB_PUBLIC_URL:-http://localhost:8080}
+      MAIL_FROM: ${MAIL_FROM:-Nightwise <no-reply@localhost>}
+      WEBAUTHN_ORIGIN: ${WEBAUTHN_ORIGIN:-http://localhost:8080}
+      WEBAUTHN_RP_ID: ${WEBAUTHN_RP_ID:-localhost}
+      WEBAUTHN_RP_NAME: ${WEBAUTHN_RP_NAME:-Nightwise Screening}
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+    ports: ["127.0.0.1:${API_HOST_PORT:-8001}:8000"]
+    volumes:
+      - temp_blobs:/var/lib/nightwise/temp
+      - deletion_tombstones:/var/lib/nightwise/tombstones
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      mailpit: {condition: service_started}
+    networks: [private, web, egress]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/v1/health')"]
+      interval: 30s
+      timeout: 4s
+      retries: 3
+
+  worker:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    command: ["python", "-m", "apps.api.worker"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-nightwise}:${POSTGRES_PASSWORD:-nightwise-local-dev-only}@postgres:5432/${POSTGRES_DB:-nightwise}
+      REDIS_URL: redis://:${REDIS_PASSWORD:-nightwise-local-dev-only}@redis:6379/0
+      MASTER_KEY: ${MASTER_KEY:-}
+      MASTER_KEY_VERSION: ${MASTER_KEY_VERSION:-v1}
+      TEMP_BLOB_KEY: ${TEMP_BLOB_KEY:-}
+      TEMP_BLOB_DIR: /var/lib/nightwise/temp
+      TOMBSTONE_DIR: /var/lib/nightwise/tombstones
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      SMTP_URL: ${SMTP_URL:-smtp://mailpit:1025}
+      SMTP_STARTTLS: ${SMTP_STARTTLS:-0}
+      MAIL_FROM: ${MAIL_FROM:-Nightwise <no-reply@localhost>}
+      WEB_PUBLIC_URL: ${WEB_PUBLIC_URL:-http://localhost:8080}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:-}
+    volumes:
+      - temp_blobs:/var/lib/nightwise/temp
+      - deletion_tombstones:/var/lib/nightwise/tombstones
+    depends_on:
+      api: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    networks: [private, egress]
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:8001/v1}
+        VITE_WEB_PUSH_PUBLIC_KEY: ${VITE_WEB_PUSH_PUBLIC_KEY:-}
+    ports: ["127.0.0.1:8080:80"]
+    depends_on: [api]
+    networks: [web]
+
+volumes:
+  postgres_data:
+  temp_blobs:
+    # Private, dedicated analysis staging volume. Excluded from backup tooling.
+  deletion_tombstones:
+    # Restricted, pseudonymous markers used to purge deleted accounts after backup restore.
+
+networks:
+  private:
+    internal: true
+  web:
+  egress:
