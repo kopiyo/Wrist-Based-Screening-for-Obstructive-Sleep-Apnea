@@ -739,6 +739,7 @@ def _night_detail(session: Session, user_id: uuid.UUID, night: Night,
         "id": str(night.id), "started_at": night.started_at.isoformat(),
         "duration_seconds": night.duration_seconds, "source": night.source,
         "source_validated": night.source_validated, "model_version": row.model_version,
+        "device_id": str(night.device_id) if night.device_id else None,
         "score": payload.get("score"), "apnea_burden_percent": payload.get("apnea_burden_percent"),
         "charts": {
             "probability_by_minute": payload.get("per_minute_probabilities"),
@@ -822,6 +823,7 @@ def list_nights(request: Request, from_: str | None = Query(default=None, alias=
             row = session.scalar(select(Result).where(Result.night_id == night.id))
             summary: dict[str, Any] = {"id": str(night.id), "started_at": night.started_at.isoformat(),
                                        "source": night.source, "source_validated": night.source_validated,
+                                       "device_id": str(night.device_id) if night.device_id else None,
                                        "model_version": row.model_version if row else "unknown"}
             if row:
                 data = json.loads(storage.decrypt_for_user(session, user.id, row.encrypted_payload, row.nonce))

@@ -5,7 +5,6 @@ export const API_BASE = (buildEnv?.VITE_API_URL ?? "http://localhost:8000/v1").r
 type ApiPath = keyof paths;
 const routes = {
   upload: "/v1/analyze/file",
-  intervals: "/v1/analyze/intervals",
   job: "/v1/jobs/{job_id}",
   result: "/v1/results/{result_id}",
   modelCard: "/v1/model-card",
@@ -17,7 +16,7 @@ export type Result = {
   apnea_burden_percent: number;
   per_minute_probabilities?: number[];
   charts?: { probability_by_minute?: ChartPoint[]; interval_tachogram?: ChartPoint[] | null; rejected_artifacts?: ChartPoint[] | null };
-  signal_quality: { usable_beat_ratio?: number | null; gap_count?: number; gap_seconds?: number; usable_beats?: number };
+  signal_quality: { usable_beat_ratio?: number | null; gap_count?: number; gap_seconds?: number; usable_beats?: number; rejected_artifact_count?: number; gaps?: { start_x: number; end_x: number }[] };
   referral_decision?: "Sleep study recommended" | "Not indicated by this screening";
   source_validated: boolean;
   model_version: string;
@@ -89,15 +88,13 @@ export const api = {
   delete: <T,>(path: string, data?: unknown, extraHeaders?: Record<string, string>) => request<T>(path, { ...json("DELETE", data), headers: extraHeaders }),
 };
 
-export function uploadFile(files: File[], kind: "ecg" | "rr_csv", persist = false, consentId?: string): Promise<Job> {
+export function uploadFile(files: File[], kind: "ecg" | "rr_csv", persist = false, consentId?: string, deviceId?: string): Promise<Job> {
   const data = new FormData();
   files.forEach(file => data.append("files", file));
   data.append("kind", kind); data.append("persist_result", String(persist));
   if (consentId) data.append("consent_id", consentId);
+  if (deviceId) data.append("device_id", deviceId);
   return request(routes.upload.replace("/v1", ""), { method: "POST", body: data });
-}
-export function uploadIntervals(rrMs: number[], ts: number[], persist = false, consentId?: string, source: "watch_rr" | "ppg_rr" = "watch_rr"): Promise<Job> {
-  return request(routes.intervals.replace("/v1", ""), { ...json("POST", { rr_ms: rrMs, ts, source, persist_result: persist, consent_id: consentId }) });
 }
 export const getJob = (id: string, capability?: string) => request<{ status: string; result_id?: string; result?: Result; error?: string }>(routes.job.replace("/v1", "").replace("{job_id}", enc(id)), { headers: capability ? { "X-Job-Capability": capability } : undefined });
 export const getResult = (id: string, capability?: string) => request<Result>(routes.result.replace("/v1", "").replace("{result_id}", enc(id)), { headers: capability ? { "X-Job-Capability": capability } : undefined });

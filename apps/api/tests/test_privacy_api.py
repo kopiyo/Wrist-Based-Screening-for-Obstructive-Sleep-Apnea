@@ -138,8 +138,8 @@ def test_anonymous_analysis_is_ephemeral_and_persistence_requires_verified_conse
     client, _ = api
     scheduled = []
 
-    def fake_schedule(payload, kind, request, persist_result, consent_id):
-        user = main._persistence(request, persist_result, consent_id)
+    def fake_schedule(payload, kind, request, persist_result, consent_id, device_id=None):
+        user = main._persistence(request, persist_result, consent_id, device_id)
         scheduled.append((kind, persist_result, consent_id, str(user.id) if user else None))
         return {"job_id": str(uuid.uuid4()), "status": "queued", "job_capability": "opaque"}
 
@@ -462,3 +462,31 @@ def test_history_rejects_malformed_filters_with_422(api):
     sign_in(client, seed_user())
     for query in ("from=not-a-date", "to=2026-13-40", "cursor=not-a-uuid"):
         assert client.get(f"/v1/nights?{query}").status_code == 422
+
+
+def test_saving_with_a_foreign_device_is_rejected(api, monkeypatch):
+    client, _ = api
+    owner = seed_user()
+    sign_in(client, owner)
+    device = client.post("/v1/devices", json={"source": "watch_rr", "label": "Mine"}, headers=csrf_headers())
+    assert device.status_code == 201
+    consent_id = create_consent(client)
+    monkeypatch.setattr(main, "write_blob", lambda *a, **k: "blob")
+    monkeypatch.setattr(main, "enqueue_blob", lambda *a, **k: str(uuid.uuid4()))
+    body = {"rr_ms": [800.0] * 800, "ts": [i * 0.8 for i in range(800)],
+            "persist_result": True, "consent_id": consent_id}
+
+    sign_in(client, seed_user("other@example.invalid"))
+    other_consent = create_consent(client)
+    foreign = client.post("/v1/analyze/intervals", headers=csrf_headers(),
+                          json=body | {"consent_id": other_consent, "device_id": device.json()["id"]})
+    assert foreign.status_code == 422
+    assert foreign.json()["detail"] == "Unknown device."
+
+
+def test_rr_payload_has_an_item_limit(api):
+    client, _ = api
+    too_many = main.MAX_INTERVALS + 1
+    response = client.post("/v1/analyze/intervals", json={"rr_ms": [800.0] * too_many,
+                                                          "ts": list(range(too_many))})
+    assert response.status_code == 422

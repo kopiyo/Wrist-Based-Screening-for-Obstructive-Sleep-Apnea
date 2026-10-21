@@ -53,7 +53,8 @@ def validate_rule_update(update: RuleUpdate) -> None:
                 "device_silent_overnight is disabled: needs live device until Phase 3"
             )
         if not rule.channels:
-            raise AlertRuleError("At least one delivery channel is required.")
+            raise AlertRuleError(
+                f"Choose at least one delivery channel for the {rule.kind.value.replace('_', ' ')} alert.")
 
 
 class AlertRuleEngine:

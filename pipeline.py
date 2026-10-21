@@ -266,6 +266,18 @@ def load_artifacts(model_dir=MODEL_DIR):
 # ---------------------------------------------------------------------------
 # Inference
 # ---------------------------------------------------------------------------
+def quality_gaps(times, threshold=2.0, limit=1000):
+    """Spans (seconds from the first sample) where consecutive usable samples
+    are further apart than ``threshold``. Capped so payloads stay bounded."""
+    times = np.asarray(times, dtype=np.float64)
+    if len(times) < 2:
+        return []
+    origin = times[0]
+    idx = np.flatnonzero(np.diff(times) > threshold)[:limit]
+    return [{"start_x": float(times[i] - origin), "end_x": float(times[i + 1] - origin)}
+            for i in idx]
+
+
 def screen(ecg, fs, model, stage2, cfg,
            age=None, sex=None, height_cm=None, weight_kg=None):
     """
@@ -343,7 +355,23 @@ def screen(ecg, fs, model, stage2, cfg,
                 per_minute_pred=preds, per_minute_prob=probs,
                 risk=risk, refer=refer, bmi=bmi, hours=dur / 3600,
                 heart_rate=60.0 / np.mean(rr) if len(rr) else np.nan,
-                n_beats=len(peaks))
+                n_beats=len(peaks),
+                signal_quality=_ecg_quality(peaks, fs, rr_t))
+
+
+def _ecg_quality(peaks, fs, rr_t):
+    """Share of detected beat-to-beat intervals that survived artefact
+    rejection, plus gaps between surviving beats measured from the first peak."""
+    raw_intervals = max(len(peaks) - 1, 1)
+    origin = peaks[0] / fs if len(peaks) else 0.0
+    beat_times = np.concatenate([[origin], rr_t]) if len(rr_t) else np.array([origin])
+    gaps = quality_gaps(beat_times)
+    return {"usable_beat_ratio": float(min(1.0, len(rr_t) / raw_intervals)),
+            "gap_count": len(gaps),
+            "gap_seconds": float(sum(max(g["end_x"] - g["start_x"] - 2.0, 0.0) for g in gaps)),
+            "gaps": gaps,
+            "usable_beats": int(len(rr_t)),
+            "rejected_artifact_count": int(max(raw_intervals - len(rr_t), 0))}
 
 
 def load_ecg_from_files(files):
@@ -467,4 +495,7 @@ def screen_intervals(rr_ms, ts, model, stage2, cfg):
                 heart_rate=60.0 / np.mean(rr_valid), n_beats=len(rr_valid),
                 signal_quality={"usable_beat_ratio": usable_ratio,
                                 "gap_count": gap_count,
-                                "gap_seconds": gap_seconds})
+                                "gap_seconds": gap_seconds,
+                                "gaps": quality_gaps(times),
+                                "usable_beats": int(len(rr_valid)),
+                                "rejected_artifact_count": int(len(rr) - len(rr_valid))})

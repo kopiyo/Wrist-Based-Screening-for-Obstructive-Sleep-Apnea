@@ -262,6 +262,7 @@ paths:
                   properties:
                     persist_result: {type: boolean, default: false}
                     consent_id: {type: [string, 'null'], format: uuid}
+                    device_id: {type: [string, 'null'], format: uuid, description: "An active device of the signed-in user; recorded only when persist_result is true."}
       responses:
         '202': {description: Accepted, content: {application/json: {schema: {$ref: '#/components/schemas/JobAccepted'}}}}
         '403': {description: Persistence requires verified account and current consent}
@@ -283,6 +284,7 @@ paths:
                 kind: {type: string, enum: [ecg, rr_csv], default: ecg}
                 persist_result: {type: boolean, default: false}
                 consent_id: {type: [string, 'null'], format: uuid}
+                device_id: {type: [string, 'null'], format: uuid, description: "An active device of the signed-in user; recorded only when persist_result is true."}
       responses:
         '202': {description: Accepted, content: {application/json: {schema: {$ref: '#/components/schemas/JobAccepted'}}}}
         '403': {description: Persistence requires verified account and current consent}
@@ -459,10 +461,10 @@ components:
       required: [rr_ms, ts]
       properties:
         source: {type: string, enum: [watch_rr, ppg_rr], default: watch_rr}
-        device: {type: [string, 'null']}
+        device: {type: [string, 'null'], maxLength: 80}
         start_ts: {type: [number, 'null']}
-        rr_ms: {type: array, minItems: 4, items: {type: number}}
-        ts: {type: array, minItems: 4, items: {type: number}}
+        rr_ms: {type: array, minItems: 4, maxItems: 200000, items: {type: number}}
+        ts: {type: array, minItems: 4, maxItems: 200000, items: {type: number}}
     JobAccepted: {type: object, required: [job_id, status, disclaimer], properties: {job_id: {type: string, format: uuid}, status: {type: string, const: queued}, job_capability: {type: [string, 'null'], description: Anonymous capability; treat as secret}, disclaimer: {type: string, const: Screening tool, not a diagnosis. Research use only.}}}
     Job: {type: object, required: [job_id, status], properties: {job_id: {type: string, format: uuid}, status: {type: string, enum: [queued, started, finished, failed, expired]}, result_id: {type: [string, 'null'], format: uuid}, result: {oneOf: [{$ref: '#/components/schemas/AnalysisResult'}, {type: 'null'}]}, error: {type: [string, 'null']}}}
     AnalysisResult:
@@ -485,7 +487,7 @@ components:
         duration_seconds: {type: number}
         signal_quality: {type: object, additionalProperties: true}
         disclaimer: {type: string, const: Screening tool, not a diagnosis. Research use only.}
-    NightSummary: {type: object, required: [id, started_at, source, source_validated, model_version], properties: {id: {type: string, format: uuid}, started_at: {type: string, format: date-time}, source: {type: string, enum: [ecg, watch_rr, ppg_rr]}, source_validated: {type: boolean}, model_version: {type: string}, score: {type: number}, apnea_burden_percent: {type: number}}}
+    NightSummary: {type: object, required: [id, started_at, source, source_validated, model_version], properties: {id: {type: string, format: uuid}, started_at: {type: string, format: date-time}, source: {type: string, enum: [ecg, watch_rr, ppg_rr]}, source_validated: {type: boolean}, model_version: {type: string}, score: {type: number}, apnea_burden_percent: {type: number}, device_id: {type: [string, 'null'], format: uuid}}}
     NightList: {type: object, required: [items], properties: {items: {type: array, items: {$ref: '#/components/schemas/NightSummary'}}, next_cursor: {type: [string, 'null']}}}
     ChartPoint: {type: object, required: [x, y], properties: {x: {type: number, description: Elapsed seconds from night start}, y: {type: number}, flagged: {type: [boolean, 'null']}}}
     NightDetail:

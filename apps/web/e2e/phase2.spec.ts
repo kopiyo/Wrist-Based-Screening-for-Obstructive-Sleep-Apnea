@@ -119,7 +119,7 @@ test("recovery UI keeps the account restricted until a passkey is added", async 
   }));
   await page.goto("/");
   await page.getByRole("navigation", { name: "Main navigation" }).getByRole("button", { name: /Privacy & settings/ }).click();
-  await page.getByRole("button", { name: "Recovery", exact: true }).click();
+  await page.getByRole("tab", { name: "Recovery", exact: true }).click();
   await page.getByLabel("Email").fill("recover@example.com");
   await page.getByLabel("One-time recovery code").fill("ONE-TIME-CODE");
   await page.getByRole("button", { name: "Use recovery code" }).click();
@@ -129,4 +129,38 @@ test("recovery UI keeps the account restricted until a passkey is added", async 
   await page.getByRole("button", { name: "Add passkey and restore access" }).click();
   await expect(page.getByRole("heading", { name: "Account settings" })).toBeVisible();
   await expect(page.getByText("Full account access has been restored.")).toBeVisible();
+});
+
+test("mobile navigation keeps visible labels and accessible names", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await asAnonymousGuest(page);
+  const navigation = page.getByRole("navigation", { name: "Main navigation" });
+  for (const name of ["Analyze", "Nights", "Devices", "Alerts", "Privacy & settings"]) {
+    await expect(navigation.getByRole("button", { name })).toBeVisible();
+  }
+  await expect(navigation.getByText("Settings", { exact: true })).toBeVisible();
+});
+
+test("revoked consents are not revocable and revoking asks before acting", async ({ page }) => {
+  let revokeCalls = 0;
+  await page.route("**/v1/privacy/consents", route => route.fulfill({
+    status: 200, contentType: "application/json",
+    body: JSON.stringify({ items: [
+      { id: "active-1", scope: "save_analysis_results", text_version: "v1", granted_at: "2026-01-02T00:00:00Z", revoked_at: null },
+      { id: "revoked-1", scope: "save_analysis_results", text_version: "v1", granted_at: "2026-01-01T00:00:00Z", revoked_at: "2026-01-03T00:00:00Z" },
+    ] }),
+  }));
+  await page.route("**/v1/privacy/consents/*", route => { revokeCalls += 1; return route.fulfill({ status: 204 }); });
+  await asSignedInUser(page);
+  await page.getByRole("navigation", { name: "Main navigation" }).getByRole("button", { name: /Privacy & settings/ }).click();
+
+  await expect(page.getByRole("button", { name: "Revoke consent" })).toHaveCount(1);
+  await page.getByText("Revoked consents (1)").click();
+  await expect(page.getByText("Revoked", { exact: true })).toBeVisible();
+
+  await page.getByRole("button", { name: "Revoke consent" }).click();
+  await expect(page.getByRole("dialog", { name: "Revoke saved-analysis consent?" })).toBeVisible();
+  await page.getByRole("dialog").getByRole("button", { name: "Cancel" }).click();
+  expect(revokeCalls).toBe(0);
+  await expect(page.getByRole("button", { name: "Revoke consent" })).toHaveCount(1);
 });

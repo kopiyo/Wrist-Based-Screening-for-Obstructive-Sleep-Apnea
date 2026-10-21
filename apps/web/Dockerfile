@@ -12,6 +12,10 @@ ENV VITE_WEB_PUSH_PUBLIC_KEY=$VITE_WEB_PUSH_PUBLIC_KEY
 RUN npm run build
 
 FROM nginx:1.27.5-alpine
+ARG VITE_API_URL=http://localhost:8000/v1
 COPY --from=build /app/apps/web/dist /usr/share/nginx/html
 COPY apps/web/nginx.conf /etc/nginx/conf.d/default.conf
+# Allow the browser to call only the configured API origin (scheme://host:port).
+RUN api_origin="$(printf '%s' "$VITE_API_URL" | sed -E 's#^(https?://[^/]+).*#\1#')" \
+ && sed -i "s#__API_ORIGIN__#${api_origin}#g" /etc/nginx/conf.d/default.conf
 EXPOSE 80

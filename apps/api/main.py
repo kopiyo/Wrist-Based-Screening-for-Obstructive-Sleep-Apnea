@@ -81,12 +81,17 @@ class AnalysisBodyLimit:
         await send({"type": "http.response.body", "body": body})
 
 
+MAX_INTERVALS = 200_000
+
+
 class IntervalsRequest(BaseModel):
     source: Literal["watch_rr", "ppg_rr"] = "watch_rr"
-    device: str | None = None
+    device: str | None = Field(default=None, max_length=80)
+    device_id: uuid.UUID | None = None
     start_ts: float | None = None
-    rr_ms: list[float] = Field(min_length=4)
-    ts: list[float] = Field(min_length=4)
+    # ~2.3 days of RR at 1 Hz; keeps the parsed request well under the 100 MB body cap.
+    rr_ms: list[float] = Field(min_length=4, max_length=MAX_INTERVALS)
+    ts: list[float] = Field(min_length=4, max_length=MAX_INTERVALS)
     persist_result: bool = False
     consent_id: uuid.UUID | None = None
 
@@ -149,8 +154,7 @@ def _run_ecg(signal: np.ndarray, fs: float) -> dict[str, Any]:
         "score": float(raw["risk"]),
         "apnea_burden_percent": 100 * float(raw["apnea_minutes"]) / max(minutes, 1),
         "per_minute_probabilities": [float(x) for x in raw["per_minute_prob"]],
-        "signal_quality": {"usable_beat_ratio": None, "gaps": None,
-                           "usable_beats": int(raw["n_beats"])},
+        "signal_quality": raw["signal_quality"],
         "referral_decision": "Sleep study recommended" if raw["refer"] else "Not indicated by this screening",
         "model_version": VERSION,
         "source_validated": True,
@@ -168,7 +172,8 @@ def _optional_user(request: Request):
     return auth.current_user(request)
 
 
-def _persistence(request: Request, persist_result: bool, consent_id: uuid.UUID | None):
+def _persistence(request: Request, persist_result: bool, consent_id: uuid.UUID | None,
+                 device_id: uuid.UUID | None = None):
     if not persist_result:
         return None
     auth._check_csrf(request)
@@ -176,9 +181,12 @@ def _persistence(request: Request, persist_result: bool, consent_id: uuid.UUID |
     if user is None:
         raise HTTPException(403, "Sign in to save an analysis.")
     from sqlalchemy import select
-    from .models import Consent, User
+    from .models import Consent, Device, User
     from .storage import db_session
     with db_session() as session:
+        if device_id is not None and session.scalar(select(Device.id).where(
+                Device.id == device_id, Device.user_id == user.id, Device.revoked_at.is_(None))) is None:
+            raise HTTPException(422, "Unknown device.")
         actual = session.get(User, user.id)
         consent = session.scalar(select(Consent).where(
             Consent.id == consent_id, Consent.user_id == user.id,
@@ -189,8 +197,9 @@ def _persistence(request: Request, persist_result: bool, consent_id: uuid.UUID |
 
 
 def _schedule_blob(payload: bytes, kind: str, request: Request,
-                   persist_result: bool, consent_id: uuid.UUID | None) -> dict[str, str]:
-    user = _persistence(request, persist_result, consent_id)
+                   persist_result: bool, consent_id: uuid.UUID | None,
+                   device_id: uuid.UUID | None = None) -> dict[str, str]:
+    user = _persistence(request, persist_result, consent_id, device_id)
     blob_id = write_blob(payload, max_bytes=140 * 1024 * 1024)
     job_id = enqueue_blob(blob_id, kind, user_id=str(user.id) if user else None,
                           persist_result=persist_result, consent_id=str(consent_id) if persist_result and consent_id else None)
@@ -278,6 +287,7 @@ async def analyze_intervals(request: IntervalsRequest, http_request: Request) ->
                       else submitted.isoformat())
         staged = json.dumps({"rr_ms": series.rr_ms.tolist(), "ts": series.ts.tolist(),
                              "source": series.source, "device": series.device,
+                             "device_id": str(request.device_id) if request.persist_result and request.device_id else None,
                              "analysis_started_at": submitted.isoformat(), "started_at": started_at},
                             separators=(",", ":"), allow_nan=False).encode()
         if len(staged) > MAX_UPLOAD_BYTES:
@@ -285,7 +295,7 @@ async def analyze_intervals(request: IntervalsRequest, http_request: Request) ->
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     return _schedule_blob(staged, "intervals", http_request,
-                          request.persist_result, request.consent_id)
+                          request.persist_result, request.consent_id, request.device_id)
 
 
 @app.post("/v1/analyze/file", status_code=202)
@@ -293,7 +303,8 @@ async def analyze_file(request: Request,
                        files: list[UploadFile] = File(...),
                        kind: str = Form("ecg"),
                        persist_result: bool = Form(False),
-                       consent_id: uuid.UUID | None = Form(None)) -> dict[str, str]:
+                       consent_id: uuid.UUID | None = Form(None),
+                       device_id: uuid.UUID | None = Form(None)) -> dict[str, str]:
     if len(files) > 10:
         raise HTTPException(422, "At most 10 files can be uploaded at once.")
     if kind not in {"ecg", "rr_csv"}:
@@ -311,7 +322,8 @@ async def analyze_file(request: Request,
     staged: dict[str, Any] = {"kind": kind, "files": [
         {"name": name, "body": base64.b64encode(content).decode("ascii")}
         for name, content in contents.items()], "analysis_started_at": submitted,
-        "started_at": submitted}
+        "started_at": submitted,
+        "device_id": str(device_id) if persist_result and device_id else None}
     if kind == "rr_csv":
         csvs = [(name, data) for name, data in contents.items() if name.lower().endswith(".csv")]
         if not csvs:
@@ -325,15 +337,16 @@ async def analyze_file(request: Request,
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
         return _schedule_blob(json.dumps(staged, separators=(",", ":")).encode(),
-                              "rr_csv", request, persist_result, consent_id)
+                              "rr_csv", request, persist_result, consent_id, device_id)
 
     try:
         # Validate payload on the API before putting only an encrypted volume blob on the queue.
         ecg_from_uploads(list(contents.items()))
-        return _schedule_blob(json.dumps(staged, separators=(",", ":")).encode(),
-                              "ecg", request, persist_result, consent_id)
     except Exception as exc:
         raise HTTPException(422, str(exc)) from exc
+    # Outside the try so auth/consent errors keep their own status instead of becoming 422.
+    return _schedule_blob(json.dumps(staged, separators=(",", ":")).encode(),
+                          "ecg", request, persist_result, consent_id, device_id)
 
 
 @app.get("/v1/jobs/{job_id}")

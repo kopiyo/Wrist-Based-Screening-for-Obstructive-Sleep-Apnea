@@ -87,6 +87,7 @@ def process_blob(blob_id: str, kind: str, user_id: str | None,
             signal, fs = ecg_from_uploads(files)
             result = main._run_ecg(signal, fs)
             result["duration_seconds"] = len(signal) / fs
+        result["device_id"] = data.get("device_id")
         result["disclaimer"] = main.DISCLAIMER
         result["created_at"] = data.get("analysis_started_at", datetime.now(timezone.utc).isoformat())
         result["started_at"] = data.get("started_at", result["created_at"])
@@ -106,7 +107,7 @@ def persist_completed_result(user_id: str, consent_id: str,
     import uuid
     from datetime import datetime, timezone
     from sqlalchemy import select
-    from .models import Consent, Night, Result, User
+    from .models import Consent, Device, Night, Result, User
     from .storage import db_session, encrypt_for_user
 
     owner = uuid.UUID(user_id)
@@ -125,9 +126,15 @@ def persist_completed_result(user_id: str, consent_id: str,
         if started.tzinfo is None:
             started = started.replace(tzinfo=timezone.utc)
         duration = max(0, int(result.get("duration_seconds", len(result.get("per_minute_probabilities", [])) * 60)))
+        device_id = None
+        if result.get("device_id"):
+            # Re-check at persist time: the device may have been removed while queued.
+            device_id = session.scalar(select(Device.id).where(
+                Device.id == uuid.UUID(result["device_id"]), Device.user_id == owner,
+                Device.revoked_at.is_(None)))
         night = Night(id=night_id, user_id=owner, source=result["source"],
                       source_validated=bool(result["source_validated"]), started_at=started,
-                      duration_seconds=duration, consent_id=consent_key)
+                      duration_seconds=duration, consent_id=consent_key, device_id=device_id)
         session.add(night)
         session.add(Result(night_id=night_id, encrypted_payload=ciphertext, nonce=nonce,
                            key_version=key_version, model_version=result["model_version"]))

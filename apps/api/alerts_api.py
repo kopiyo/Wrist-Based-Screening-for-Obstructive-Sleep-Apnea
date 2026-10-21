@@ -7,7 +7,7 @@ from datetime import datetime, time
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from sqlalchemy import select
 
 from . import auth
@@ -25,7 +25,8 @@ _engine = AlertRuleEngine(SQLAlertRepository())
 class RuleEntry(BaseModel):
     kind: RuleKind
     enabled: bool
-    channels: list[DeliveryChannel] = Field(min_length=1)
+    # Emptiness is checked by the engine so the client gets a readable message.
+    channels: list[DeliveryChannel]
 
 
 class QuietHours(BaseModel):
