@@ -7,6 +7,8 @@ COPY packages ./packages
 WORKDIR /app/apps/web
 ARG VITE_API_URL=http://localhost:8000/v1
 ENV VITE_API_URL=$VITE_API_URL
+ARG VITE_WEB_PUSH_PUBLIC_KEY=
+ENV VITE_WEB_PUSH_PUBLIC_KEY=$VITE_WEB_PUSH_PUBLIC_KEY
 RUN npm run build
 
 FROM nginx:1.27.5-alpine

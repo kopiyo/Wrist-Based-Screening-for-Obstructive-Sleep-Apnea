@@ -4,7 +4,7 @@ test("shows the disclaimer and ECG analysis screen", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByText("Screening tool, not a diagnosis. Research use only.").first()).toBeVisible();
   await expect(page.getByRole("heading", { name: "Review a night of sleep" })).toBeVisible();
-  await expect(page.getByText("Validated input")).toBeVisible();
+  await expect(page.getByText("Research model")).toBeVisible();
 });
 
 test("does not show ECG validation metrics on the unvalidated interval tab", async ({ page }) => {

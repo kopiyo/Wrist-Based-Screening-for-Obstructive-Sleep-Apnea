@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import re
 from typing import Protocol
 
@@ -16,6 +17,34 @@ class DerivedIntervals:
     ts: np.ndarray
     source: str
     device: str | None = None
+
+
+def interval_chart_projection(series: DerivedIntervals) -> tuple[list[dict], list[dict]]:
+    """Project accepted/rejected RR points using the existing pipeline bounds/window."""
+    rr = np.asarray(series.rr_ms, dtype=np.float64) / 1000.0
+    times = np.asarray(series.ts, dtype=np.float64)
+    physiologic = (rr >= 0.3) & (rr <= 2.0)
+    accepted = np.zeros(len(rr), dtype=bool)
+    candidate = np.flatnonzero(physiologic)
+    if len(candidate):
+        from pandas import Series
+        candidate_rr = rr[candidate]
+        median = Series(candidate_rr).rolling(5, center=True, min_periods=1).median().to_numpy()
+        accepted[candidate] = np.abs(candidate_rr - median) <= 0.20 * median
+    origin = times[0] if len(times) else 0.0
+    accepted_points = [{"x": float(t - origin), "y": float(value * 1000), "flagged": False}
+                       for t, value, keep in zip(times, rr, accepted) if keep]
+    rejected_points = [{"x": float(t - origin), "y": float(value * 1000), "flagged": True}
+                       for t, value, keep in zip(times, rr, accepted) if not keep]
+    return accepted_points, rejected_points
+
+
+def submitted_or_epoch_start(ts: float | None, submitted_at: datetime | None = None) -> str:
+    """Only treat explicitly epoch-scale input as a calendar timestamp."""
+    submitted_at = submitted_at or datetime.now(timezone.utc)
+    if ts is not None and np.isfinite(ts) and ts >= 946684800:
+        return datetime.fromtimestamp(float(ts), timezone.utc).isoformat()
+    return submitted_at.astimezone(timezone.utc).isoformat()
 
 
 class IntervalAdapter(Protocol):
